@@ -852,17 +852,17 @@ public final class SQLDatabaseManager implements DatabaseManager {
             }
 
             statementGetUsers = connection.prepareStatement(
-                    "SELECT `" + tablePrefix + "`users.`uuid` AS uuid, `" + tablePrefix +  "users`.`user` AS user "
+                    "SELECT `" + tablePrefix + "users`.`uuid`, `" + tablePrefix +  "users`.`user` "
                             + "FROM `" + tablePrefix + "party_users` "
-                            + "INNER JOIN `" + tablePrefix + "users`"
-                            + "ON `" + tablePrefix + "party_users`.`user_id` = `" + tablePrefix + "users`.`id`"
-                            + "WHERE " + tablePrefix + "party_users`.`party_id` = ?" );//TODO test this
+                            + "INNER JOIN `" + tablePrefix + "users` "
+                            + "ON `" + tablePrefix + "party_users`.`user_id` = `" + tablePrefix + "users`.`id` "
+                            + "WHERE `" + tablePrefix + "party_users`.`party_id` = ?" );//TODO test this
             statementGetUsers.setInt(1, resultSetGetParty.getInt("id"));
             resultSetGetUsers = statementGetUsers.executeQuery();
 
             LinkedHashMap<UUID, String> members = party.getMembers();
 
-            if (resultSetGetParty.next()){
+            if (resultSetGetUsers.next()){
                 members.put(UUID.fromString(resultSetGetUsers.getString("uuid")), resultSetGetUsers.getString("user"));
             } else {
                 deleteParty(party);
