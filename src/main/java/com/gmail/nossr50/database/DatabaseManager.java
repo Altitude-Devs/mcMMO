@@ -7,6 +7,8 @@ import com.gmail.nossr50.datatypes.database.PlayerStat;
 import com.gmail.nossr50.datatypes.party.Party;
 import com.gmail.nossr50.datatypes.player.PlayerProfile;
 import com.gmail.nossr50.datatypes.skills.PrimarySkillType;
+import org.bukkit.OfflinePlayer;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -138,9 +140,25 @@ public interface DatabaseManager {
 
     boolean saveUserUUIDs(Map<String, UUID> fetchedUUIDs);
 
-    Collection<? extends Party> loadParties();
+    void loadParties(List<Party> parties);
 
     void saveParties(Collection<? extends Party> parties);
+
+    boolean partyExists(String partyName);
+
+    void removeFromParty(OfflinePlayer player, String name);
+
+    void deleteParty(Party party);
+
+    void setPartyLeader(OfflinePlayer player, String name);
+
+    boolean saveParty(Party party);
+
+    void addUserToParty(String playerName, UUID uniqueId, String name);
+
+    void setAllies(String partyName, String allyName);
+
+    void disbandAlliance(String partyName, String allyName);
 
     /**
      * Retrieve the type of database in use. Custom databases should return CUSTOM.

@@ -21,6 +21,7 @@ import com.gmail.nossr50.runnables.database.UUIDUpdateAsyncTask;
 import com.gmail.nossr50.util.Misc;
 import org.apache.tomcat.jdbc.pool.DataSource;
 import org.apache.tomcat.jdbc.pool.PoolProperties;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.jetbrains.annotations.NotNull;
@@ -767,13 +768,16 @@ public final class SQLDatabaseManager implements DatabaseManager {
         }
     }
 
-    public Collection<? extends Party> loadParties() {
+    /**
+     * Loads all parties and stores them in provided List
+     * @param parties List to store all parties into
+     */
+    public void loadParties(List<Party> parties) {
         Connection connection = null;
         PreparedStatement statement = null;
         PreparedStatement statementAllies = null;
         ResultSet resultSet = null;
         ResultSet resultSetAllies = null;
-        final List<Party> parties = new ArrayList<>();
 
         try{
             connection = getConnection(PoolIdentifier.LOAD);
@@ -812,10 +816,14 @@ public final class SQLDatabaseManager implements DatabaseManager {
             tryClose(statementAllies);
             tryClose(connection);
         }
-
-        return parties;
     }
 
+    /**
+     * Returns a Party object
+     * @param resultSetGetParty ResultSet for a party
+     * @param connection Connection to get users belonging to the party with
+     * @return Party object
+     */
     private Party getParty(@NotNull ResultSet resultSetGetParty, @NotNull Connection connection){
 
         Party party = null;
@@ -854,6 +862,12 @@ public final class SQLDatabaseManager implements DatabaseManager {
 
             LinkedHashMap<UUID, String> members = party.getMembers();
 
+            if (resultSetGetParty.next()){
+                members.put(UUID.fromString(resultSetGetUsers.getString("uuid")), resultSetGetUsers.getString("user"));
+            } else {
+                deleteParty(party);
+            }
+
             while (resultSetGetUsers.next()){
                 members.put(UUID.fromString(resultSetGetUsers.getString("uuid")), resultSetGetUsers.getString("user"));
             }
@@ -869,6 +883,11 @@ public final class SQLDatabaseManager implements DatabaseManager {
         return party;
     }
 
+    /**
+     * Returns a PartyLeader object from the id of a party leader
+     * @param owner_id Id of the owner of the party
+     * @return PartyLeader object for the party leader with the specified id
+     */
     private PartyLeader getPartyLeaderById(String owner_id) {
 
         PartyLeader partyLeader = null;
@@ -896,7 +915,233 @@ public final class SQLDatabaseManager implements DatabaseManager {
         return partyLeader;
     }
 
-    public Party getParty(@NotNull String partyName){
+    /**
+     * Checks if a party is in the database
+     * @param partyName Name of party to check for
+     * @return true if the party exists
+     */
+    public boolean partyExists(String partyName){
+
+        Connection connection = null;
+        PreparedStatement statement = null;
+        ResultSet resultSet = null;
+
+        try{
+            connection = getConnection(PoolIdentifier.LOAD);
+
+            statement = connection.prepareStatement("SELECT 1 FROM " + tablePrefix + "parties WHERE party_name = ?");
+            statement.setString(1, partyName);
+            resultSet = statement.executeQuery();
+
+            if (resultSet.next()){
+                return true;
+            }
+
+        } catch (SQLException ex) {
+            printErrors(ex);
+        }
+        finally {
+            tryClose(statement);
+            tryClose(resultSet);
+            tryClose(connection);
+        }
+
+        return false;
+    }
+
+    /**
+     * Removes a player from a party
+     * @param player Player to remove
+     * @param partyName Name of party to remove the player from
+     */
+    public void removeFromParty(OfflinePlayer player, String partyName) {
+        Connection connection = null;
+        PreparedStatement statement = null;
+
+        try{
+            connection = getConnection(PoolIdentifier.SAVE);
+
+            statement = connection.prepareStatement("DELETE `" + tablePrefix + "party_users` FROM `" + tablePrefix + "party_users`"
+                    + "INNER JOIN `" + tablePrefix + "users` ON `" + tablePrefix + "users`.`id`=`" + tablePrefix + "party_users`.`user_id`"
+                    + "INNER JOIN `" + tablePrefix + "parties` ON `" + tablePrefix + "parties`.`id`=`" + tablePrefix + "party_users`.`party_id`"
+                    + "WHERE `" + tablePrefix + "users.`user` = ?) "
+                    + "AND `" + tablePrefix + "parties`.`party_name` = ?)");
+            statement.setString(1, player.getName());
+            statement.setString(2, partyName);
+            statement.execute();
+
+        } catch (SQLException ex) {
+            printErrors(ex);
+        }
+        finally {
+            tryClose(statement);
+            tryClose(connection);
+        }
+    }
+
+    /**
+     * Deletes a party from the database
+     * @param party Party to delete
+     */
+    public void deleteParty(Party party) {
+        Connection connection = null;
+        PreparedStatement statement = null;
+
+        if (party.getAlly() != null){
+            disbandAlliance(party.getName(), party.getAlly().getName());
+        }
+
+        try{
+            connection = getConnection(PoolIdentifier.SAVE);
+
+            statement = connection.prepareStatement("DELETE FROM `" + tablePrefix + "parties` WHERE party_name = ?");
+            statement.setString(1, party.getName());
+            statement.execute();
+
+        } catch (SQLException ex) {
+            printErrors(ex);
+        }
+        finally {
+            tryClose(statement);
+            tryClose(connection);
+        }
+    }
+
+    /**
+     * Set's the leader of a party
+     * @param player Player to make owner of a party
+     * @param partyName Party to make player the owner of
+     */
+    public void setPartyLeader(OfflinePlayer player, String partyName) {
+        Connection connection = null;
+        PreparedStatement statement = null;
+
+        int userId = getPartyUserId(player.getName());
+
+        if (userId == -1){
+            userId = addUserToPartyGetResult(player.getName(), player.getUniqueId(), partyName);
+        }
+
+        try{
+            connection = getConnection(PoolIdentifier.SAVE);
+
+            statement = connection.prepareStatement("UPDATE `" + tablePrefix + "parties` "
+                    + "SET owner_id = ? "
+                    + "WHERE party_name = ?");
+            statement.setInt(1, userId);
+            statement.setString(2, partyName);
+            statement.execute();
+
+        } catch (SQLException ex) {
+            printErrors(ex);
+        }
+        finally {
+            tryClose(statement);
+            tryClose(connection);
+        }
+    }
+
+    /**
+     * Get's user id belonging to specified party member
+     * @param userName Name of the party member to get the id for
+     * @return user id if it was found -1 if it wasn't found
+     */
+    private int getPartyUserId(String userName) {
+        Connection connection = null;
+        PreparedStatement statement = null;
+        ResultSet resultSet = null;
+
+        try{
+            connection = getConnection(PoolIdentifier.LOAD);
+
+            statement = connection.prepareStatement("SELECT user_id FROM `" + tablePrefix + "party_users` "
+                    + "INNER JOIN `" + tablePrefix + "users` ON `" + tablePrefix + "users`.`id`=`" + tablePrefix + "party_users`.`user_id"
+                    + "WHERE `" + tablePrefix + "users`.`user` = ?");
+            statement.setString(1, userName);
+            resultSet = statement.executeQuery();
+
+            if (resultSet.next()){
+                return resultSet.getInt("user_id");
+            }
+
+        } catch (SQLException ex) {
+            printErrors(ex);
+        }
+        finally {
+            tryClose(statement);
+            tryClose(resultSet);
+            tryClose(connection);
+        }
+
+        return -1;
+    }
+
+    /**
+     * Sets alliance for the two specified parties
+     * @param partyName Party to set the alliance for
+     * @param allyName Party to alliance with
+     */
+    public void setAllies(String partyName, String allyName){
+        HashMap<String, Integer> partyIds = getPartyIds(Arrays.asList(partyName, allyName));
+
+        if (partyIds.size() == 2) {
+            Connection connection = null;
+            PreparedStatement statement = null;
+
+            try{
+                connection = getConnection(PoolIdentifier.SAVE);
+                statement = connection.prepareStatement("UPDATE `" + tablePrefix + "parties` "
+                        + "SET ally = ? "
+                        + "WHERE party_id = ?)");
+                statement.setInt(1, partyIds.get(allyName));
+                statement.setInt(2, partyIds.get(partyName));
+                statement.executeUpdate();
+
+                statement = connection.prepareStatement("UPDATE `" + tablePrefix + "parties` "
+                        + "SET ally = ? "
+                        + "WHERE party_id = ?)");
+                statement.setInt(1, partyIds.get(partyName));
+                statement.setInt(2, partyIds.get(allyName));
+                statement.executeUpdate();
+
+            } catch (SQLException ex) {
+                printErrors(ex);
+            }
+            finally {
+                tryClose(statement);
+                tryClose(connection);
+            }
+        }
+    }
+
+    /**
+     * Sets ally to null for both parties
+     * @param partyName Party that wants to disband alliance
+     * @param allyName Party to disband alliance with
+     */
+    public void disbandAlliance(String partyName, String allyName) {
+        Connection connection = null;
+        PreparedStatement statement = null;
+
+        try{
+            connection = getConnection(PoolIdentifier.SAVE);
+            statement = connection.prepareStatement("UPDATE `" + tablePrefix + "parties` "
+                    + "SET ally = NULL "
+                    + "WHERE party_id IN (?, ?)");
+            statement.setString(1, partyName);
+            statement.setString(2, allyName);
+            statement.execute();
+
+        } catch (SQLException ex) {
+            printErrors(ex);
+        }
+        finally {
+            tryClose(statement);
+            tryClose(connection);
+        }
+    }
+
+    private Party getParty(@NotNull String partyName){ //TODO check if needed?
 
         Party party = null;
 
@@ -924,7 +1169,7 @@ public final class SQLDatabaseManager implements DatabaseManager {
                     "SELECT A.party_name AS party_name, B.party_name AS ally_name "
                             + "FROM `" + tablePrefix + "parties` A, `" + tablePrefix + "parties` B "
                             + "WHERE party_name = ?"
-                            + "AND A.ally = B.id");;
+                            + "AND A.ally = B.id");
             statementGetAlly.setString(1, partyName);
             resultSetGetAlly = statementGetAlly.executeQuery();
 
@@ -944,6 +1189,55 @@ public final class SQLDatabaseManager implements DatabaseManager {
         }
 
         return party;
+    }
+
+    /**
+     * Saves a party
+     * @param party Party to save
+     * @return True if saving was successful
+     */
+    public boolean saveParty(Party party){
+        PreparedStatement statement = null;
+        Connection connection = null;
+        ResultSet resultSet = null;
+
+        try{
+            connection = getConnection(PoolIdentifier.LOAD); //We're only loading data here, the saving happens in separate functions with their own connections
+            statement = connection.prepareStatement("SELECT party_name FROM `" + tablePrefix + "parties` WHERE party_name = ?");
+            statement.setString(1, party.getName());
+            resultSet = statement.executeQuery();
+
+            if (resultSet.next()){
+                mcMMO.p.getLogger().warning("There is already a party called " + party.getName() + ".");
+                return false;
+            }
+
+            PartyLeader leader = party.getLeader();
+            int userID = getUserID(connection, leader.getPlayerName(), leader.getUniqueId());
+
+            if (userID == -1){
+                mcMMO.p.getLogger().warning("Unable to save party " + party.getName() + " due to the parties leader not being in the database.");
+                return false;
+            }
+
+            int id = storeParty(party, userID);
+
+            if (id != -1) {
+                addUsersToParty(party.getMembers(), id);
+            } else {
+                return false;
+            }
+
+        } catch (SQLException ex) {
+            printErrors(ex);
+        }
+        finally {
+            tryClose(resultSet);
+            tryClose(statement);
+            tryClose(connection);
+        }
+
+        return true;
     }
 
     /**
@@ -980,7 +1274,7 @@ public final class SQLDatabaseManager implements DatabaseManager {
                         mcMMO.p.getLogger().warning("Unable to save party " + party.getName() + " due to the parties leader not being in the database.");
                         continue;
                     }
-                    int id = createExistingParty(party, userID);
+                    int id = storeParty(party, userID);
                     if (id != -1) {
                         addUsersToParty(party.getMembers(), id);
                     } else {
@@ -1005,7 +1299,7 @@ public final class SQLDatabaseManager implements DatabaseManager {
      * @param leaderId userId belonging to the party leader
      * @return The id of the party after it's stored in the database on success and -1 on failure
      */
-    private int createExistingParty(Party party, int leaderId) {
+    private int storeParty(Party party, int leaderId) {
         PreparedStatement statement = null;
         Connection connection = null;
 
@@ -1045,6 +1339,11 @@ public final class SQLDatabaseManager implements DatabaseManager {
         return -1;
     }
 
+    /**
+     * Get party id from party name
+     * @param partyName Name of the party to get the id for
+     * @return id of the party
+     */
     private int getPartyId(String partyName) {
         ResultSet resultSet = null;
         PreparedStatement statement = null;
@@ -1070,6 +1369,120 @@ public final class SQLDatabaseManager implements DatabaseManager {
         return -1;
     }
 
+    /**
+     * Gets the id's belonging to the parties in the provided list
+     * @param partyNames List of party names to get the id for
+     * @return Id's of the parties that were provided
+     */
+    private HashMap<String, Integer> getPartyIds(List<String> partyNames) {
+        HashMap<String, Integer> partyMap = new HashMap<>();
+
+        if (partyNames.size() == 1){
+            String partyName = partyNames.get(0);
+            partyMap.put(partyName, getPartyId(partyName));
+            return partyMap;
+        }
+
+        ResultSet resultSet = null;
+        PreparedStatement statement = null;
+        Connection connection = null;
+
+        try {
+            connection = getConnection(PoolIdentifier.LOAD);
+            StringBuilder sb = new StringBuilder();
+
+            sb.append("SELECT id,party_name FROM `").append(tablePrefix).append("parties` WHERE party_name IN (");
+
+            for (int i = 0; i < partyNames.size() - 1; i++){
+                sb.append("?,");
+            }
+
+            sb.append("?)");
+            statement = connection.prepareStatement(sb.toString());
+
+            int i = 0;
+            for (String partyName : partyNames){
+                i++;
+                statement.setString(i, partyName);
+            }
+
+            resultSet = statement.executeQuery();
+
+            while (resultSet.next()) {
+                partyMap.put(resultSet.getString("party_name"), resultSet.getInt("id"));
+            }
+
+        } catch (SQLException ex) {
+            printErrors(ex);
+        } finally {
+            tryClose(resultSet);
+            tryClose(statement);
+            tryClose(connection);
+        }
+
+        return partyMap;
+    }
+
+
+    /**
+     * Publicly accessible way to add a user to party
+     * @param playerName Name of the player who should be added to the party
+     * @param uuid Uuid of the player who should be added to the party
+     * @param partyName Name of the party to add the player to
+     */
+    public void addUserToParty(String playerName, UUID uuid, String partyName){
+        addUserToPartyGetResult(playerName, uuid, partyName);
+    }
+
+    /**
+     * Adds a user to a party and returns the id they got assigned
+     * @param playerName Name of the player who should be added to the party
+     * @param uuid Uuid of the player who should be added to the party
+     * @param partyName Name of the party to add the player to
+     * @return The id of the user who got added to the party in the database
+     */
+    private int addUserToPartyGetResult(String playerName, UUID uuid, String partyName){
+        PreparedStatement statement = null;
+        Connection connection = null;
+        Connection userConnection = null;
+        ResultSet resultSet = null;
+
+        try{
+            connection = getConnection(PoolIdentifier.SAVE);
+            userConnection = getConnection(PoolIdentifier.LOAD);
+
+            int partyId = getPartyId(partyName);
+            int userId = getUserID(userConnection, playerName, uuid);
+            //TODO should be able to do this with inner joins mayb?
+            statement = connection.prepareStatement("INSERT INTO `" + tablePrefix + "` (user_id, party_id) VALUES (?, ?)");
+
+            statement.setInt(1, userId);
+            statement.setInt(2, partyId);
+
+            resultSet = statement.executeQuery();
+
+            if (resultSet.next()){
+                return resultSet.getInt("user_id");
+            }
+
+        } catch (SQLException ex) {
+            printErrors(ex);
+        }
+        finally {
+            tryClose(statement);
+            tryClose(connection);
+            tryClose(userConnection);
+            tryClose(resultSet);
+        }
+
+        return -1;
+    }
+
+    /**
+     * Adds provided users to provided party
+     * @param members List of members to add to the specified party
+     * @param id Id of the party to add the members to
+     */
     private void addUsersToParty(LinkedHashMap<UUID, String> members, int id) {
         ArrayList<Integer> userIDs = getUsersIDsNotInParty(members);
         StringBuilder query = new StringBuilder();
@@ -1088,7 +1501,7 @@ public final class SQLDatabaseManager implements DatabaseManager {
             Connection connection = null;
 
             try{
-                connection = getConnection(PoolIdentifier.LOAD);
+                connection = getConnection(PoolIdentifier.SAVE);
 
                 statement = connection.prepareStatement(query.toString());
 
@@ -1112,6 +1525,11 @@ public final class SQLDatabaseManager implements DatabaseManager {
         }
     }
 
+    /**
+     * Get's existing users who are in the users table and in the members list but not in the party table
+     * @param members List of members to check with
+     * @return List of id's of users who are in the users table, and the provided members list, but not in the party users table
+     */
     private ArrayList<Integer> getUsersIDsNotInParty(LinkedHashMap<UUID, String> members) {
         ResultSet resultSet = null;
         PreparedStatement statement = null;
@@ -1124,6 +1542,7 @@ public final class SQLDatabaseManager implements DatabaseManager {
         try {
             connection = getConnection(PoolIdentifier.LOAD);
             StringBuilder query = new StringBuilder();
+
             query.append("SELECT id FROM `").append(tablePrefix).append("users` WHERE ");
 
             if (members.size() == 1){
@@ -1167,13 +1586,17 @@ public final class SQLDatabaseManager implements DatabaseManager {
         return null;
     }
 
+    /**
+     * Loads all parties from a file rather than the database
+     * @param partyFile File to load parties from
+     */
     private void loadPartiesFromFileAndSave(File partyFile) {
         if (!partyFile.exists()) {
             return;
         }
 
         if (mcMMO.getUpgradeManager().shouldUpgrade(UpgradeType.ADD_UUIDS_PARTY)) {
-            PartyManager.loadAndUpgradeParties(partyFile);
+            PartyManager.loadAndUpgradeParties(partyFile, YamlConfiguration.loadConfiguration(partyFile));
             return;
         }
 
@@ -1425,8 +1848,8 @@ public final class SQLDatabaseManager implements DatabaseManager {
                         + "`party_id` int(10) unsigned NOT NULL,"
                         + "`ptp` BIT NOT NULL DEFAULT b'0',"
                         + "PRIMARY KEY (`user_id`),"
-                        + "FOREIGN KEY (`user_id`) REFERENCES `" + tablePrefix + "users`(`id`), "
-                        + "FOREIGN KEY (`party_id`) REFERENCES `" + tablePrefix + "parties`(`id`)) "
+                        + "FOREIGN KEY (`user_id`) REFERENCES `" + tablePrefix + "users`(`id`) ON DELETE CASCADE ON UPDATE CASCADE, "
+                        + "FOREIGN KEY (`party_id`) REFERENCES `" + tablePrefix + "parties`(`id`) ON DELETE CASCADE ON UPDATE CASCADE) "
                         + "DEFAULT CHARSET=latin1 AUTO_INCREMENT=1;");
                 tryClose(createStatement);
             }

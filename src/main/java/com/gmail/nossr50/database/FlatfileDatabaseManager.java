@@ -21,6 +21,7 @@ import com.gmail.nossr50.runnables.database.UUIDUpdateAsyncTask;
 import com.gmail.nossr50.util.Misc;
 import com.gmail.nossr50.util.text.StringUtils;
 import org.bukkit.OfflinePlayer;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -36,12 +37,19 @@ public final class FlatfileDatabaseManager implements DatabaseManager {
     private final long UPDATE_WAIT_TIME = 600000L; // 10 minutes
     private final File usersFile;
     private final File partyFile;
+    private final YamlConfiguration partiesFile;
 
     private static final Object fileWritingLock = new Object();
 
     protected FlatfileDatabaseManager() {
         usersFile = new File(mcMMO.getUsersFilePath());
         partyFile = new File(mcMMO.getPartyFilePath());
+        partiesFile = YamlConfiguration.loadConfiguration(partyFile);
+
+        if (mcMMO.getUpgradeManager().shouldUpgrade(UpgradeType.ADD_UUIDS_PARTY)) {
+            PartyManager.loadAndUpgradeParties(partyFile, partiesFile);
+        }
+
         checkStructure();
         updateLeaderboards();
 
@@ -717,22 +725,12 @@ public final class FlatfileDatabaseManager implements DatabaseManager {
         return true;
     }
 
-    public Collection<? extends Party> loadParties() {
+    public void loadParties(List<Party> parties) {
         if (!partyFile.exists()) {
-            return null;
+            return;
         }
-
-        if (mcMMO.getUpgradeManager().shouldUpgrade(UpgradeType.ADD_UUIDS_PARTY)) {
-            PartyManager.loadAndUpgradeParties(partyFile);
-            return null;
-        }
-
-        final List<Party> parties = new ArrayList<>();
 
         try {
-            YamlConfiguration partiesFile;
-            partiesFile = YamlConfiguration.loadConfiguration(partyFile);
-
             ArrayList<Party> hasAlly = new ArrayList<>();
 
             for (String partyName : partiesFile.getConfigurationSection("").getKeys(false)) {
@@ -775,7 +773,6 @@ public final class FlatfileDatabaseManager implements DatabaseManager {
         } catch (Exception e) {
             e.printStackTrace();
         }
-        return parties;
     }
 
     public void saveParties(Collection<? extends Party> parties) {
@@ -790,34 +787,7 @@ public final class FlatfileDatabaseManager implements DatabaseManager {
 
         mcMMO.p.debug("Saving Parties... (" + parties.size() + ")");
         for (Party party : parties) {
-            String partyName = party.getName();
-            PartyLeader leader = party.getLeader();
-
-            partiesFile.set(partyName + ".Leader", leader.getUniqueId().toString() + "|" + leader.getPlayerName());
-            partiesFile.set(partyName + ".Password", party.getPassword());
-            partiesFile.set(partyName + ".Locked", party.isLocked());
-            partiesFile.set(partyName + ".Level", party.getLevel());
-            partiesFile.set(partyName + ".Xp", (int) party.getXp());
-            partiesFile.set(partyName + ".Ally", (party.getAlly() != null) ? party.getAlly().getName() : "");
-            partiesFile.set(partyName + ".ExpShareMode", party.getXpShareMode().toString());
-            partiesFile.set(partyName + ".ItemShareMode", party.getItemShareMode().toString());
-
-            for (ItemShareType itemShareType : ItemShareType.values()) {
-                partiesFile.set(partyName + ".ItemShareType." + itemShareType.toString(), party.sharingDrops(itemShareType));
-            }
-
-            List<String> members = new ArrayList<>();
-
-            for (Map.Entry<UUID, String> memberEntry : party.getMembers().entrySet()) {
-                String memberUniqueId = memberEntry.getKey() == null ? "" : memberEntry.getKey().toString();
-                String memberName = memberEntry.getValue();
-
-                if (!members.contains(memberName)) {
-                    members.add(memberUniqueId + "|" + memberName);
-                }
-            }
-
-            partiesFile.set(partyName + ".Members", members);
+            addPartyToFileNoSave(party);
         }
 
         try {
@@ -825,6 +795,101 @@ public final class FlatfileDatabaseManager implements DatabaseManager {
         }
         catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+
+    private void addPartyToFileNoSave(Party party){
+        String partyName = party.getName();
+        PartyLeader leader = party.getLeader();
+
+        partiesFile.set(partyName + ".Leader", leader.getUniqueId().toString() + "|" + leader.getPlayerName());
+        partiesFile.set(partyName + ".Password", party.getPassword());
+        partiesFile.set(partyName + ".Locked", party.isLocked());
+        partiesFile.set(partyName + ".Level", party.getLevel());
+        partiesFile.set(partyName + ".Xp", (int) party.getXp());
+        partiesFile.set(partyName + ".Ally", (party.getAlly() != null) ? party.getAlly().getName() : "");
+        partiesFile.set(partyName + ".ExpShareMode", party.getXpShareMode().toString());
+        partiesFile.set(partyName + ".ItemShareMode", party.getItemShareMode().toString());
+
+        for (ItemShareType itemShareType : ItemShareType.values()) {
+            partiesFile.set(partyName + ".ItemShareType." + itemShareType.toString(), party.sharingDrops(itemShareType));
+        }
+
+        List<String> members = new ArrayList<>();
+
+        for (Map.Entry<UUID, String> memberEntry : party.getMembers().entrySet()) {
+            String memberUniqueId = memberEntry.getKey() == null ? "" : memberEntry.getKey().toString();
+            String memberName = memberEntry.getValue();
+
+            if (!members.contains(memberName)) {
+                members.add(memberUniqueId + "|" + memberName);
+            }
+        }
+
+        partiesFile.set(partyName + ".Members", members);
+    }
+
+    public boolean partyExists(@NotNull String partyName){ //TODO test this
+        String party = partiesFile.getString(partyName);
+
+        return party == null;
+    }
+
+    public void removeFromParty(OfflinePlayer player, String name) {
+        List<String> list = partiesFile.getStringList(name + ".Members");
+        if (!list.isEmpty()) {
+            list.remove(player.getUniqueId() + "|" + player.getName());
+            partiesFile.set(name + ".Members", list);
+            save(partiesFile);
+        }
+    }
+
+    public void deleteParty(Party party) {
+        if (party.getAlly() != null){
+            disbandAlliance(party.getName(), party.getAlly().getName());
+        }
+        partiesFile.set(party.getName(), "");
+        save(partiesFile);
+    }
+
+    public void setPartyLeader(OfflinePlayer player, String name) {
+        partiesFile.set(name + ".Leader", player.getUniqueId() + "|" + player.getName());
+        save(partiesFile);
+    }
+
+    public boolean saveParty(Party party) {
+        addPartyToFileNoSave(party);
+        save(partiesFile);
+        return true;
+    }
+
+    public void addUserToParty(String playerName, UUID uniqueId, String name) {
+        List<String> list = partiesFile.getStringList(name + ".Members");
+        String toAdd = uniqueId + "|" + name;
+        if (!list.isEmpty() && !list.contains(toAdd)) {
+            list.add(toAdd);
+            partiesFile.set(name + ".Members", list);
+            save(partiesFile);
+        }
+    }
+
+    public void setAllies(String partyName, String allyName) {
+        partiesFile.set(partyName + ".Ally", allyName);
+        partiesFile.set(allyName + ".Ally", partyName);
+        save(partiesFile);
+    }
+
+    public void disbandAlliance(String partyName, String allyName) { //TODO test this
+        partiesFile.set(partyName + ".Ally", "");
+        partiesFile.set(allyName + ".Ally", "");
+        save(partiesFile);
+    }
+
+    private void save(YamlConfiguration partiesFile) {
+        try {
+            partiesFile.save(partyFile);
+        } catch (IOException e) {
+            mcMMO.p.getLogger().severe("Unable to save parties.yml file.");
         }
     }
 

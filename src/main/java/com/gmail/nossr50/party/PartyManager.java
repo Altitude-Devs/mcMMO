@@ -1,6 +1,7 @@
 package com.gmail.nossr50.party;
 
 import com.gmail.nossr50.config.Config;
+import com.gmail.nossr50.database.DatabaseManager;
 import com.gmail.nossr50.datatypes.chat.ChatChannel;
 import com.gmail.nossr50.datatypes.database.UpgradeType;
 import com.gmail.nossr50.datatypes.interactions.NotificationType;
@@ -29,7 +30,6 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map.Entry;
 import java.util.UUID;
 
 public final class PartyManager {
@@ -46,7 +46,7 @@ public final class PartyManager {
      */
     public static boolean checkPartyExistence(Player player, String partyName) {
         if (getParty(partyName) == null) {
-            return false;
+            return mcMMO.getDatabaseManager().partyExists(partyName);
         }
 
         player.sendMessage(LocaleLoader.getString("Commands.Party.AlreadyExists", partyName));
@@ -316,6 +316,7 @@ public final class PartyManager {
         String playerName = player.getName();
 
         members.remove(player.getUniqueId());
+        mcMMO.getDatabaseManager().removeFromParty(player, party.getName());
 
         if (player.isOnline()) {
             party.getOnlineMembers().remove(player.getPlayer());
@@ -323,11 +324,13 @@ public final class PartyManager {
 
         if (members.isEmpty()) {
             parties.remove(party);
+            mcMMO.getDatabaseManager().deleteParty(party);
         }
         else {
             // If the leaving player was the party leader, appoint a new leader from the party members
             if (party.getLeader().getUniqueId().equals(player.getUniqueId())) {
                 setPartyLeader(members.keySet().iterator().next(), party);
+                mcMMO.getDatabaseManager().setPartyLeader(player, party.getName());
             }
 
             informPartyMembersQuit(party, playerName);
@@ -367,6 +370,7 @@ public final class PartyManager {
         }
 
         parties.remove(party);
+        mcMMO.getDatabaseManager().deleteParty(party);
     }
 
     /**
@@ -385,10 +389,14 @@ public final class PartyManager {
             player.sendMessage(LocaleLoader.getString("Party.Password.Set", password));
         }
 
-        parties.add(party);
+        if (mcMMO.getDatabaseManager().saveParty(party)) {
+            parties.add(party);
 
-        player.sendMessage(LocaleLoader.getString("Commands.Party.Create", party.getName()));
-        addToParty(mcMMOPlayer, party);
+            player.sendMessage(LocaleLoader.getString("Commands.Party.Create", party.getName()));
+            addToParty(mcMMOPlayer, party);
+        } else {
+            //TODO error message
+        }
     }
 
     /**
@@ -478,6 +486,7 @@ public final class PartyManager {
     public static void createAlliance(Party firstParty, Party secondParty) {
         firstParty.setAlly(secondParty);
         secondParty.setAlly(firstParty);
+        mcMMO.getDatabaseManager().setAllies(firstParty.getName(), secondParty.getName());
 
         for (Player member : firstParty.getOnlineMembers()) {
             member.sendMessage(LocaleLoader.getString("Party.Alliance.Formed", secondParty.getName()));
@@ -500,6 +509,7 @@ public final class PartyManager {
     private static void disbandAlliance(Party firstParty, Party secondParty) {
         firstParty.setAlly(null);
         secondParty.setAlly(null);
+        mcMMO.getDatabaseManager().disbandAlliance(firstParty.getName(), secondParty.getName());
 
         for (Player member : firstParty.getOnlineMembers()) {
             member.sendMessage(LocaleLoader.getString("Party.Alliance.Disband", secondParty.getName()));
@@ -521,6 +531,7 @@ public final class PartyManager {
         String playerName = player.getName();
 
         informPartyMembersJoin(party, playerName);
+        mcMMO.getDatabaseManager().addUserToParty(mcMMOPlayer.getPlayer().getName(), mcMMOPlayer.getPlayer().getUniqueId(), party.getName());
         mcMMOPlayer.setParty(party);
         party.getMembers().put(player.getUniqueId(), player.getName());
         party.getOnlineMembers().add(player);
@@ -562,6 +573,7 @@ public final class PartyManager {
             }
         }
 
+        mcMMO.getDatabaseManager().setPartyLeader(player, party.getName());
         party.setLeader(new PartyLeader(player.getUniqueId(), player.getName()));
     }
 
@@ -580,9 +592,7 @@ public final class PartyManager {
      * Load party file.
      */
     public static void loadParties() {
-
-        parties.addAll(mcMMO.getDatabaseManager().loadParties());
-
+        mcMMO.getDatabaseManager().loadParties(parties);
     }
 
     /**
@@ -592,9 +602,7 @@ public final class PartyManager {
         mcMMO.getDatabaseManager().saveParties(parties);
     }
 
-    public static void loadAndUpgradeParties(File partyFile) {
-        YamlConfiguration partiesFile = YamlConfiguration.loadConfiguration(partyFile);
-
+    public static void loadAndUpgradeParties(File partyFile, YamlConfiguration partiesFile) {
         if (!partyFile.renameTo(new File(mcMMO.getFlatFileDirectory() + "parties.yml.converted"))) {
             mcMMO.p.getLogger().severe("Could not rename parties.yml to parties.yml.converted!");
             return;
